@@ -1,0 +1,17 @@
+# Executável gerado pelo PyInstaller (publicar como Release, não no repositório)
+dist/*.exe
+build/
+*.spec
+
+# Configuração antiga com lembretes pessoais (a atual fica em %APPDATA%\Lembretes)
+config.json
+config.json.tmp
+
+# Python
+__pycache__/
+*.pyc
+
+# Sistema / Google Drive
+desktop.ini
+Thumbs.db
+.~*

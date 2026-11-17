@@ -1,0 +1,17 @@
+LEMBRETES — lembretes discretos para Windows
+=============================================
+
+Como usar
+1. Copie o arquivo Lembretes.exe para uma pasta fixa (ex.: Documentos).
+2. Dê dois cliques nele.
+   Na primeira vez o Windows pode mostrar "O Windows protegeu o computador".
+   Clique em "Mais informações" e depois em "Executar assim mesmo".
+3. Crie seus lembretes em "Novo lembrete".
+
+Dicas
+- Fechar a janela não fecha o app: ele fica no ícone do sino, perto do relógio.
+  Clique com o botão direito no sino para pausar ou sair.
+- Em Configurações, ative "Iniciar com o Windows" para ele abrir sozinho.
+- Se você estiver longe do PC, os lembretes esperam e aparecem num resumo
+  quando você voltar.
+- Seus lembretes ficam salvos em %APPDATA%\Lembretes\config.json.
