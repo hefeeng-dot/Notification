@@ -1,12 +1,12 @@
 """
-Lembretes — lembretes recorrentes discretos para Windows.
+Blink — lembretes recorrentes discretos para Windows.
 
 Pop-up minimalista no canto da tela, ícone na bandeja, lembretes rápidos por
 atalho global (Ctrl+Alt+L), contador e meta diária, foco automático em chamadas
 e tela cheia, e pomodoro (Ctrl+Alt+P).
 
-Executar:  pyw lembretes.pyw         (abre a janela)
-           pyw lembretes.pyw --min   (inicia só na bandeja)
+Executar:  pyw blink.pyw         (abre a janela)
+           pyw blink.pyw --min   (inicia só na bandeja)
 """
 import base64
 import ctypes
@@ -15,6 +15,7 @@ import json
 import math
 import os
 import queue
+import shutil
 import random
 import re
 import socket
@@ -34,13 +35,31 @@ from ctypes import wintypes
 
 from PIL import Image, ImageChops, ImageDraw, ImageTk
 
-APP = "Lembretes"
+APP = "Blink"
+OLD_APP = "Lembretes"                         # nome antigo: pasta de dados e autostart
 FROZEN = getattr(sys, "frozen", False)          # rodando como .exe (PyInstaller)
 BASE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.environ.get("APPDATA") or BASE, APP)
 CONFIG = os.path.join(DATA_DIR, "config.json")
 SOUND_DIR = os.path.join(DATA_DIR, "sons")
 LEGACY_CONFIG = os.path.join(BASE, "config.json")   # local antigo, ao lado do script
+
+
+def _migrate_old_data_dir():
+    """Traz os dados da pasta antiga (%APPDATA%/Lembretes) para a pasta nova na primeira execução."""
+    old = os.path.join(os.path.dirname(DATA_DIR), OLD_APP)
+    if os.path.exists(DATA_DIR) or not os.path.isdir(old):
+        return
+    try:
+        os.rename(old, DATA_DIR)
+    except OSError:
+        try:
+            shutil.copytree(old, DATA_DIR)
+        except OSError:
+            pass
+
+
+_migrate_old_data_dir()
 PORT = 47821          # garante uma única instância
 GRACE_MIN = 3         # tolerância para disparar um lembrete atrasado
 AWAY_SEC = 90         # sem mexer no mouse/teclado por esse tempo = ausente
@@ -522,6 +541,10 @@ def set_autostart(enabled):
     import winreg
     key = r"Software\Microsoft\Windows\CurrentVersion\Run"
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_SET_VALUE) as k:
+        try:
+            winreg.DeleteValue(k, OLD_APP)     # entrada do nome antigo
+        except FileNotFoundError:
+            pass
         if enabled:
             winreg.SetValueEx(k, APP, 0, winreg.REG_SZ, autostart_command())
         else:
@@ -2753,7 +2776,7 @@ class App:
         head.pack(fill="x", padx=P, pady=(int(30 * s), 0))
         left = tk.Frame(head, bg=t["bg"])
         left.pack(side="left", fill="x", expand=True)
-        tk.Label(left, text="Lembretes", font=F["h1"], bg=t["bg"], fg=t["fg"]).pack(anchor="w")
+        tk.Label(left, text=APP, font=F["h1"], bg=t["bg"], fg=t["fg"]).pack(anchor="w")
         self.lbl_status = tk.Label(left, text="", font=F["sub"], bg=t["bg"], fg=t["sub"])
         self.lbl_status.pack(anchor="w", pady=(int(2 * s), 0))
         right = tk.Frame(head, bg=t["bg"])
@@ -3488,7 +3511,7 @@ class App:
             pystray.Menu.SEPARATOR,
             M("Sair", lambda: self.q.put("quit")),
         )
-        self.tray = pystray.Icon("lembretes", make_icon_image(64), APP, menu)
+        self.tray = pystray.Icon("blink", make_icon_image(64), APP, menu)
         self.tray.run_detached()
         return True
 
@@ -3583,7 +3606,7 @@ def main():
     except Exception:
         pass
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("lembretes.app")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("blink.app")
     except Exception:
         pass
     if signal_existing():

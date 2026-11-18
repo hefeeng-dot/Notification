@@ -1,8 +1,8 @@
-LEMBRETES — lembretes discretos para Windows
+BLINK — lembretes discretos para Windows
 =============================================
 
 Como usar
-1. Copie o arquivo Lembretes.exe para uma pasta fixa (ex.: Documentos).
+1. Copie o arquivo Blink.exe para uma pasta fixa (ex.: Documentos).
 2. Dê dois cliques nele.
    Na primeira vez o Windows pode mostrar "O Windows protegeu o computador".
    Clique em "Mais informações" e depois em "Executar assim mesmo".
@@ -14,4 +14,4 @@ Dicas
 - Em Configurações, ative "Iniciar com o Windows" para ele abrir sozinho.
 - Se você estiver longe do PC, os lembretes esperam e aparecem num resumo
   quando você voltar.
-- Seus lembretes ficam salvos em %APPDATA%\Lembretes\config.json.
+- Seus lembretes ficam salvos em %APPDATA%\Blink\config.json.

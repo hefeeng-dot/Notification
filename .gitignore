@@ -3,7 +3,7 @@ dist/*.exe
 build/
 *.spec
 
-# Configuração antiga com lembretes pessoais (a atual fica em %APPDATA%\Lembretes)
+# Configuração antiga com lembretes pessoais (a atual fica em %APPDATA%\Blink)
 config.json
 config.json.tmp
 

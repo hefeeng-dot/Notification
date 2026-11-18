@@ -1,4 +1,4 @@
-# Lembretes
+# Blink
 
 App de lembretes discretos para Windows, minimalista, com um toque de "dynamic island".
 
@@ -18,20 +18,20 @@ Requer Python 3.11+ no Windows.
 
 ```bash
 pip install pystray pillow
-pyw lembretes.pyw
+pyw blink.pyw
 ```
 
-Ou dê dois cliques em `Abrir Lembretes.bat`.
+Ou dê dois cliques em `Abrir Blink.bat`.
 
 ## Gerar o .exe
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed --name Lembretes --hidden-import pystray._win32 lembretes.pyw
+pyinstaller --onefile --windowed --name Blink --hidden-import pystray._win32 blink.pyw
 ```
 
-O executável sai em `dist/Lembretes.exe` (veja `dist/LEIA-ME.txt` para quem for usar).
+O executável sai em `dist/Blink.exe` (veja `dist/LEIA-ME.txt` para quem for usar).
 
 ## Onde ficam os dados
 
-Tudo fica em `%APPDATA%\Lembretes`: `config.json` com lembretes e configurações, `notion_cache.json` e os sons gerados. O token do Notion é criptografado com a conta do Windows (DPAPI) e nunca fica na pasta do projeto.
+Tudo fica em `%APPDATA%\Blink`: `config.json` com lembretes e configurações, `notion_cache.json` e os sons gerados. O token do Notion é criptografado com a conta do Windows (DPAPI) e nunca fica na pasta do projeto.
