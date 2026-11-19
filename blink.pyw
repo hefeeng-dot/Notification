@@ -11,6 +11,7 @@ Executar:  pyw blink.pyw         (abre a janela)
 import base64
 import ctypes
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -20,7 +21,9 @@ import random
 import re
 import socket
 import struct
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -36,6 +39,10 @@ from ctypes import wintypes
 from PIL import Image, ImageChops, ImageDraw, ImageTk
 
 APP = "Blink"
+VERSION = "1.1.0"
+# Arquivo público que diz qual é a versão mais nova (repositório só com esse arquivo).
+UPDATE_URL = os.environ.get("BLINK_UPDATE_URL") or \
+    "https://raw.githubusercontent.com/hefeeng-dot/blink-updates/main/versao.json"
 OLD_APP = "Lembretes"                         # nome antigo: pasta de dados e autostart
 FROZEN = getattr(sys, "frozen", False)          # rodando como .exe (PyInstaller)
 BASE = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
@@ -103,6 +110,7 @@ DEFAULT_SETTINGS = {
     "foco_chamadas": True, "foco_tela_cheia": True,
     "pomo_foco": 25, "pomo_pausa": 5, "pomo_longa": 15, "pomo_ciclos": 4, "pomo_segurar": True,
     "ilha": True, "olhos_min": 30,
+    "versao_vista": "", "update_check": 0, "update_para": "", "update_notas": "",
     "notion_token": "", "notion_db": "", "notion_avisar": True,
     "notion_horarios": {"golden": "06:00", "manha": "08:00", "tarde": "13:00", "noite": "19:00"},
 }
@@ -552,6 +560,75 @@ def set_autostart(enabled):
                 winreg.DeleteValue(k, APP)
             except FileNotFoundError:
                 pass
+
+
+# ───────────────────────── atualização automática ─────────────────────────
+
+def parse_version(v):
+    return tuple(int(x) for x in re.findall(r"\d+", str(v or ""))[:4]) or (0,)
+
+
+def fetch_manifest(url=None):
+    """Lê o versao.json: {"versao", "notas", "download" (link direto do .exe, opcional),
+    "pagina" (página da área de membros, opcional), "sha256" (opcional)}."""
+    req = urllib.request.Request(url or UPDATE_URL, headers={"User-Agent": f"{APP}/{VERSION}",
+                                                             "Cache-Control": "no-cache"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        m = json.load(r)
+    if not isinstance(m, dict) or not m.get("versao"):
+        raise ValueError("arquivo de versão inválido")
+    return m
+
+
+def download_update(url, sha256=None):
+    """Baixa o novo .exe para %APPDATA%\\Blink\\update e confere se está inteiro."""
+    folder = os.path.join(DATA_DIR, "update")
+    os.makedirs(folder, exist_ok=True)
+    dest = os.path.join(folder, f"{APP}-novo.exe")
+    tmp = dest + ".part"
+    req = urllib.request.Request(url, headers={"User-Agent": f"{APP}/{VERSION}"})
+    h, got = hashlib.sha256(), 0
+    with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
+        while True:
+            chunk = r.read(256 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+            h.update(chunk)
+            got += len(chunk)
+    with open(tmp, "rb") as f:
+        head = f.read(2)
+    if got < 1_000_000 or head != b"MZ":
+        os.remove(tmp)
+        raise ValueError("o arquivo baixado não é um executável válido")
+    if sha256 and h.hexdigest().lower() != sha256.strip().lower():
+        os.remove(tmp)
+        raise ValueError("o arquivo baixado está corrompido (hash diferente)")
+    os.replace(tmp, dest)
+    return dest
+
+
+def install_update(new_exe, target=None, pid=None):
+    """Script que espera o Blink fechar, troca o .exe e reabre. Se a troca falhar, reabre o antigo."""
+    target = target or sys.executable
+    pid = pid or os.getpid()
+    script = os.path.join(tempfile.gettempdir(), f"{APP}-atualizar.cmd")
+    content = (
+        "@echo off\r\nchcp 65001 >nul\r\nset n=0\r\n"
+        ":esperar\r\n"
+        f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul && (ping -n 2 127.0.0.1 >nul & goto esperar)\r\n'
+        ":trocar\r\n"
+        f'copy /Y "{new_exe}" "{target}" >nul 2>&1 && goto pronto\r\n'
+        "set /a n+=1\r\n"
+        "if %n% lss 30 (ping -n 2 127.0.0.1 >nul & goto trocar)\r\n"
+        ":pronto\r\n"
+        f'del "{new_exe}" >nul 2>&1\r\n'
+        f'start "" "{target}" --min\r\n'
+        '(goto) 2>nul & del "%~f0"\r\n')
+    with open(script, "w", encoding="utf-8", newline="") as f:
+        f.write(content)
+    subprocess.Popen(["cmd", "/c", script], creationflags=0x08000000 | 0x00000200, close_fds=True)
+    return script
 
 
 # ───────────────────────── token protegido (Windows DPAPI) ─────────────────────────
@@ -1208,7 +1285,7 @@ class Popup:
         accent = lemb.get("cor") or PALETTE[0]
         surf = t["surface"]
         self.W = int(self.BASE_W * s)
-        self.total = self.remaining = max(2, int(st["duracao"])) * 1000
+        self.total = self.remaining = max(2, int(lemb.get("_dur") or st["duracao"])) * 1000
         self.alpha, self.alpha_target = 0.0, float(st["opacidade"])
         self.x = self.y = self.ty = None
         self.closing = self.hover = self.animating = False
@@ -1249,11 +1326,18 @@ class Popup:
 
         acts = tk.Frame(body, bg=surf)
         acts.pack(fill="x", pady=(int(12 * s), 0), padx=(indent, 0))
+        custom = lemb.get("_acoes")          # [(texto, função, destaque?)]
+        for i, (txt, fn, main) in enumerate(reversed(custom or [])):
+            b = tk.Label(acts, text=txt, font=F["small_b"] if main else F["small"], bg=surf,
+                         fg=t["fg"] if main else t["sub"], cursor="hand2")
+            b.pack(side="right", padx=(0, int(18 * s) if i else 0))
+            b.bind("<Button-1>", lambda e, fn=fn: (self.close(), fn(), "break")[2])
         ok = tk.Label(acts, text="Ok" if sistema else "Feito", font=F["small_b"],
                       bg=surf, fg=t["fg"], cursor="hand2")
-        ok.pack(side="right")
+        if not custom:
+            ok.pack(side="right")
         ok.bind("<Button-1>", self._done)
-        if not sistema:
+        if not sistema and not custom:
             sz = tk.Label(acts, text=f"Adiar {st['adiar_min']} min", font=F["small"], bg=surf,
                           fg=t["sub"], cursor="hand2")
             sz.pack(side="right", padx=(0, int(18 * s)))
@@ -1594,9 +1678,16 @@ class Island:
             bar.create_rectangle(0, 0, bw * frac, int(2 * s) + 1, width=0,
                                  fill=POMO_FOCO if app.pomo.phase == "foco" else POMO_PAUSA)
 
-        def section(text):
-            lab(b, text=text.upper(), font=F["caps"], fg=c["faint"]).pack(
-                anchor="w", pady=(int(18 * s), int(6 * s)))
+        def section(text, action=None):
+            row = tk.Frame(b, bg=c["bg"])
+            row.pack(fill="x", pady=(int(18 * s), int(6 * s)))
+            lab(row, text=text.upper(), font=F["caps"], fg=c["faint"]).pack(side="left")
+            if action:
+                l = lab(row, text=action[0], font=F["small"], fg=c["faint"], cursor="hand2")
+                l.pack(side="right")
+                l.bind("<Enter>", lambda e: l.configure(fg=c["fg"]))
+                l.bind("<Leave>", lambda e: l.configure(fg=c["faint"]))
+                l.bind("<Button-1>", lambda e: action[1]())
 
         up = app.upcoming(3)
         if up:
@@ -1612,7 +1703,8 @@ class Island:
         nt = app.notion_today()
         if nt is not None:
             pend = [a for a in nt if not a["done"]]
-            section(f"Hoje no Notion  ·  {len(nt) - len(pend)} de {len(nt)}")
+            section(f"Hoje no Notion  ·  {len(nt) - len(pend)} de {len(nt)}",
+                    ("sincronizando…" if app._syncing else "↻  sincronizar", app.sync_now))
             if app.notion_err and not app.notion_acts:
                 lab(b, text=app.notion_err, font=F["small"], fg=c["sub"]).pack(anchor="w")
             elif not nt:
@@ -2446,6 +2538,13 @@ class SettingsDialog(Dialog):
         aviso = "" if all(ok.values()) and ok else "   (algum atalho está em uso por outro app)"
         note(p, "Atalhos:  Ctrl + Alt + L  lembrete rápido   ·   Ctrl + Alt + N  tarefa no Notion   ·   "
                 "Ctrl + Alt + P  pomodoro" + aviso)
+        vr = tk.Frame(p, bg=t["bg"])
+        vr.pack(fill="x", pady=(int(8 * s), 0))
+        nova = f"   ·   versão {app.update_info['versao']} disponível" if app.update_info else ""
+        tk.Label(vr, text=f"{APP} {VERSION}{nova}", font=F["small"], bg=t["bg"], fg=t["faint"]).pack(side="left")
+        Btn(vr, app, "Atualizar agora" if app.update_info else "Procurar atualizações",
+            lambda: (self.destroy(), app.offer_update() if app.update_info else app.check_updates(True)),
+            kind="link", font=F["small"]).pack(side="right")
 
         # Som
         p = self.panels["som"]
@@ -2714,6 +2813,9 @@ class App:
         self.root.after(2000, self.watch_return)
         self.root.after(1000, self.pomo_loop)
         self.root.after(1500, self.notion_loop)
+        self.update_info, self._update_offered, self._updating = None, set(), False
+        self.root.after(2500, self._after_update_notice)
+        self.root.after(60 * 1000, self.update_loop)
 
     def _fonts(self):
         fams = set(tkfont.families(self.root))
@@ -2846,13 +2948,14 @@ class App:
             y = (win.winfo_screenheight() - h) // 3
         win.geometry(f"+{max(0, x)}+{max(0, y)}")
 
-    def _caps(self, text, top, link=None):
+    def _caps(self, text, top, link=None, links=None):
         s = self.scale
         f = tk.Frame(self.list, bg=self.t["bg"])
         f.pack(fill="x", padx=int(12 * s), pady=(int(top * s), int(2 * s)))
         tk.Label(f, text=text.upper(), font=self.F["caps"], bg=self.t["bg"], fg=self.t["faint"]).pack(side="left")
-        if link:
-            Btn(f, self, link[0], link[1], kind="link", font=self.F["small"]).pack(side="right")
+        for i, (txt, fn) in enumerate(links or ([link] if link else [])):
+            Btn(f, self, txt, fn, kind="link", font=self.F["small"]).pack(
+                side="right", padx=(0, int(18 * s) if i else 0))
 
     def refresh(self):
         t, s, F = self.t, self.scale, self.F
@@ -2875,11 +2978,15 @@ class App:
         if nt is not None:
             feitos = sum(1 for a in nt if a["done"])
             cap = f"Hoje no Notion  ·  {feitos} de {len(nt)}"
-            if self.notion_err:
-                cap += f"  ·  {self.notion_err}"
-            elif not self.notion_acts:
+            if self._syncing:
                 cap += "  ·  sincronizando…"
-            self._caps(cap, 22 if sections else 0, link=("+  Nova tarefa", self.open_task))
+            elif self.notion_err:
+                cap += f"  ·  {self.notion_err}"
+            elif self.notion_at:
+                cap += f"  ·  atualizado às {self.notion_at:%H:%M}"
+            self._caps(cap, 22 if sections else 0,
+                       links=[("+  Nova tarefa", self.open_task),
+                              ("Sincronizando…" if self._syncing else "↻  Sincronizar", self.sync_now)])
             sections += 1
             for i, a in enumerate(nt):
                 self._row_notion(a, first=(i == 0))
@@ -3120,6 +3227,110 @@ class App:
             except Exception as e:
                 self.q.put(("notion_err", f"Erro ao ler o Notion: {e}"))
         threading.Thread(target=run, daemon=True).start()
+
+    # ── atualização ──
+    def _after_update_notice(self):
+        """Depois de atualizar: mostra a versão nova e as novidades (uma vez)."""
+        st = self.st
+        vista = st.get("versao_vista") or ""
+        if vista and vista != VERSION:
+            notas = st.get("update_notas") if st.get("update_para") == VERSION else ""
+            Popup(self, {"titulo": f"{APP} atualizado para a versão {VERSION}", "mensagem": notas or "",
+                         "cor": PALETTE[2], "_sistema": True, "_dur": 14})
+        if vista != VERSION:
+            st["versao_vista"] = VERSION
+            save_cfg(self.cfg)
+
+    def update_loop(self):
+        if time.time() - float(self.st.get("update_check") or 0) >= 20 * 3600:
+            self.check_updates(manual=False)
+        self.root.after(3 * 3600 * 1000, self.update_loop)
+
+    def check_updates(self, manual=True):
+        def run():
+            try:
+                self.q.put(("update_ok", (fetch_manifest(), manual)))
+            except Exception as e:
+                self.q.put(("update_err", (str(e), manual)))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _update_result(self, kind, data):
+        if kind == "update_err":
+            if data[1]:
+                Popup(self, {"titulo": "Não consegui verificar atualizações",
+                             "mensagem": "Confira a internet e tente de novo.", "_sistema": True,
+                             "cor": PALETTE[-1]}, sound=False)
+            return
+        m, manual = data
+        self.st["update_check"] = time.time()
+        save_cfg(self.cfg)
+        if parse_version(m["versao"]) <= parse_version(VERSION):
+            self.update_info = None
+            if manual:
+                Popup(self, {"titulo": "Você já está na versão mais nova",
+                             "mensagem": f"{APP} {VERSION}", "_sistema": True, "cor": PALETTE[2]}, sound=False)
+            return
+        self.update_info = m
+        self.st.update(update_para=str(m["versao"]), update_notas=str(m.get("notas") or ""))
+        save_cfg(self.cfg)
+        if manual or m["versao"] not in self._update_offered:
+            self._update_offered.add(m["versao"])
+            self.offer_update()
+
+    def offer_update(self):
+        m = self.update_info
+        if not m:
+            return
+        Popup(self, {"titulo": f"{APP} {m['versao']} disponível", "mensagem": m.get("notas") or "",
+                     "cor": PALETTE[0], "_sistema": True, "_dur": 25,
+                     "_acoes": [("Depois", lambda: None, False), ("Atualizar agora", self.do_update, True)]})
+
+    def do_update(self):
+        m = self.update_info
+        if not m or self._updating:
+            return
+        if FROZEN and m.get("download"):
+            self._updating = True
+            Popup(self, {"titulo": "Baixando a atualização…", "mensagem": "O Blink vai reabrir sozinho.",
+                         "_sistema": True, "cor": PALETTE[0], "_dur": 8}, sound=False)
+
+            def run():
+                try:
+                    self.q.put(("update_dl", download_update(m["download"], m.get("sha256"))))
+                except Exception as e:
+                    self.q.put(("update_dl_err", str(e)))
+            threading.Thread(target=run, daemon=True).start()
+        elif m.get("pagina") or m.get("download"):
+            webbrowser.open(m.get("pagina") or m["download"])
+        else:
+            Popup(self, {"titulo": "Atualização disponível", "_sistema": True, "cor": PALETTE[0],
+                         "mensagem": "Baixe a versão nova pelo link que chegou no seu e-mail."})
+
+    def _update_downloaded(self, kind, data):
+        if kind == "update_dl_err":
+            self._updating = False
+            m = self.update_info or {}
+            acoes = [("Fechar", lambda: None, False)]
+            if m.get("pagina"):
+                acoes.append(("Baixar pelo site", lambda: webbrowser.open(m["pagina"]), True))
+            Popup(self, {"titulo": "A atualização não foi concluída", "mensagem": data, "_sistema": True,
+                         "cor": PALETTE[4], "_dur": 20, "_acoes": acoes})
+            return
+        save_cfg(self.cfg)
+        install_update(data)
+        self.root.after(300, self.quit)
+
+    def sync_now(self):
+        """Botão "Sincronizar": busca o Notion agora e mostra o andamento."""
+        if not self.notion_configured():
+            SettingsDialog(self, "notion")
+            return
+        if self._syncing:
+            return
+        self.notion_err = None
+        self.sync_notion()
+        self.refresh()
+        self.island.refresh()
 
     def _notion_result(self, kind, data):
         self._syncing = False
@@ -3503,11 +3714,15 @@ class App:
             M("Lembrete rápido    Ctrl+Alt+L", lambda: self.q.put("quick")),
             M("Nova tarefa no Notion    Ctrl+Alt+N", lambda: self.q.put("task"),
               visible=lambda i: self.notion_configured()),
+            M("Sincronizar Notion", lambda: self.q.put("sync"),
+              visible=lambda i: self.notion_configured()),
             M(lambda i: "Parar pomodoro" if self.pomo.running else "Iniciar pomodoro    Ctrl+Alt+P",
               lambda: self.q.put("pomo")),
             M(lambda i: "Retomar lembretes" if self.is_paused() else "Pausar por 1 hora",
               lambda: self.q.put("pause")),
             M("Chamar os olhinhos", lambda: self.q.put("peek")),
+            M(lambda i: f"Atualizar para a versão {self.update_info['versao']}" if self.update_info
+              else "Procurar atualizações", lambda: self.q.put("update")),
             pystray.Menu.SEPARATOR,
             M("Sair", lambda: self.q.put("quit")),
         )
@@ -3519,7 +3734,11 @@ class App:
         try:
             while True:
                 msg = self.q.get_nowait()
-                if isinstance(msg, tuple):
+                if isinstance(msg, tuple) and msg[0] in ("update_ok", "update_err"):
+                    self._update_result(*msg)
+                elif isinstance(msg, tuple) and msg[0] in ("update_dl", "update_dl_err"):
+                    self._update_downloaded(*msg)
+                elif isinstance(msg, tuple):
                     self._notion_result(*msg)
                 elif msg == "show":
                     self.show()
@@ -3527,6 +3746,10 @@ class App:
                     self.toggle_pause()
                 elif msg == "quick":
                     self.open_quick()
+                elif msg == "sync":
+                    self.sync_now()
+                elif msg == "update":
+                    self.offer_update() if self.update_info else self.check_updates(manual=True)
                 elif msg == "peek":
                     if self.island.state == "hidden":
                         self.peek.show()

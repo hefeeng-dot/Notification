@@ -32,6 +32,21 @@ pyinstaller --onefile --windowed --name Blink --hidden-import pystray._win32 bli
 
 O executável sai em `dist/Blink.exe` (veja `dist/LEIA-ME.txt` para quem for usar).
 
+## Lançar uma atualização
+
+O Blink verifica uma vez por dia o arquivo público
+`https://raw.githubusercontent.com/hefeeng-dot/blink-updates/main/versao.json`
+(repositório **público** `blink-updates`, que contém só esse arquivo; o modelo está em `updates/versao.json`).
+
+1. Aumente `VERSION` em `blink.pyw` (ex.: `1.2.0`) e gere o `.exe`.
+2. Escolha como entregar:
+   - **Link direto** (o Blink baixa, troca e reabre sozinho): suba o `Blink.exe` num lugar com link direto
+     (ex.: Release do `blink-updates`), coloque o link em `download` e o hash em `sha256`:
+     `(Get-FileHash dist\Blink.exe -Algorithm SHA256).Hash`
+   - **Área de membros** (o Blink só avisa e abre a página): deixe `download` vazio e coloque o link em `pagina`.
+3. Atualize `versao` e `notas` no `versao.json` do `blink-updates`. Pronto: os usuários recebem o aviso em até um dia
+   (ou na hora, pelo menu da bandeja → "Procurar atualizações").
+
 ## Onde ficam os dados
 
 Tudo fica em `%APPDATA%\Blink`: `config.json` com lembretes e configurações, `notion_cache.json` e os sons gerados. O token do Notion é criptografado com a conta do Windows (DPAPI) e nunca fica na pasta do projeto.
